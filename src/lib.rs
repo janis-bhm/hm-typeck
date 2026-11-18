@@ -1,10 +1,12 @@
 pub mod ast;
 pub mod builder;
 pub mod print;
+pub mod ptr_map;
 
 pub use ast::{BinOp, Block, Expr, FnDecl, Program, Stmt, Type};
 pub use builder::{BlockBuilder, FnBuilder};
 pub use print::{pretty, print_block, print_expr, print_stmt};
+pub use ptr_map::{Ptr, PtrMap};
 
 #[cfg(test)]
 mod tests {
