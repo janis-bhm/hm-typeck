@@ -12,6 +12,11 @@ impl<T: ?Sized> Ptr<T> {
     pub fn addr(self) -> usize {
         self.0 as *const () as usize
     }
+
+    /// Erases the pointee type while preserving its address identity.
+    pub fn erase(self) -> Ptr<()> {
+        Ptr(self.0 as *const ())
+    }
 }
 
 impl<T: ?Sized> Copy for Ptr<T> {}
@@ -49,12 +54,17 @@ impl<T: ?Sized> From<&T> for Ptr<T> {
 }
 
 /// A map keyed by the address identity of borrowed values.
-pub struct PtrMap<'a, T: ?Sized, V> {
-    map: HashMap<Ptr<T>, V>,
-    _borrow: PhantomData<&'a T>,
+///
+/// Keys are identified by address, so values with equal contents but different
+/// addresses are distinct keys. Do not insert keys whose referents may be
+/// dropped or moved while the map is alive; the borrow lifetime enforces this
+/// for values inserted through [`PtrMap::insert`].
+pub struct PtrMap<'a, V> {
+    map: HashMap<Ptr<()>, V>,
+    _borrow: PhantomData<&'a ()>,
 }
 
-impl<'a, T: ?Sized, V> PtrMap<'a, T, V> {
+impl<'a, V> PtrMap<'a, V> {
     pub fn new() -> Self {
         Self {
             map: HashMap::new(),
@@ -62,48 +72,48 @@ impl<'a, T: ?Sized, V> PtrMap<'a, T, V> {
         }
     }
 
-    pub fn insert(&mut self, key: &'a T, value: V) -> Option<V> {
-        self.map.insert(Ptr::from(key), value)
+    pub fn insert<T: ?Sized>(&mut self, key: &'a T, value: V) -> Option<V> {
+        self.map.insert(Ptr::from(key).erase(), value)
     }
 
-    pub fn get(&self, key: &T) -> Option<&V> {
-        self.map.get(&Ptr::from(key))
+    pub fn get<T: ?Sized>(&self, key: &T) -> Option<&V> {
+        self.map.get(&Ptr::from(key).erase())
     }
 
-    pub fn get_mut(&mut self, key: &T) -> Option<&mut V> {
-        self.map.get_mut(&Ptr::from(key))
+    pub fn get_mut<T: ?Sized>(&mut self, key: &T) -> Option<&mut V> {
+        self.map.get_mut(&Ptr::from(key).erase())
     }
 
-    pub fn remove(&mut self, key: &T) -> Option<V> {
-        self.map.remove(&Ptr::from(key))
+    pub fn remove<T: ?Sized>(&mut self, key: &T) -> Option<V> {
+        self.map.remove(&Ptr::from(key).erase())
     }
 
-    pub fn contains_key(&self, key: &T) -> bool {
-        self.map.contains_key(&Ptr::from(key))
+    pub fn contains_key<T: ?Sized>(&self, key: &T) -> bool {
+        self.map.contains_key(&Ptr::from(key).erase())
     }
 }
 
-impl<T: ?Sized, V> Deref for PtrMap<'_, T, V> {
-    type Target = HashMap<Ptr<T>, V>;
+impl<V> Deref for PtrMap<'_, V> {
+    type Target = HashMap<Ptr<()>, V>;
 
     fn deref(&self) -> &Self::Target {
         &self.map
     }
 }
 
-impl<T: ?Sized, V> DerefMut for PtrMap<'_, T, V> {
+impl<V> DerefMut for PtrMap<'_, V> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.map
     }
 }
 
-impl<T: ?Sized, V> Default for PtrMap<'_, T, V> {
+impl<V> Default for PtrMap<'_, V> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T: ?Sized, V: fmt::Debug> fmt::Debug for PtrMap<'_, T, V> {
+impl<V: fmt::Debug> fmt::Debug for PtrMap<'_, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_map().entries(self.map.iter()).finish()
     }
@@ -111,7 +121,7 @@ impl<T: ?Sized, V: fmt::Debug> fmt::Debug for PtrMap<'_, T, V> {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Expr, PtrMap};
+    use crate::{Expr, PtrMap, Stmt};
 
     #[test]
     fn keys_are_expression_address_identities() {
@@ -139,11 +149,29 @@ mod tests {
     fn supports_unsized_string_keys() {
         let first = String::from("same");
         let second = String::from("same");
-        let mut map = PtrMap::<str, _>::new();
+        let expr = Expr::int(2);
+        let mut map = PtrMap::<i32>::new();
 
         map.insert(first.as_str(), 1);
+        map.insert(&expr, 2);
 
         assert_eq!(map.get(first.as_str()), Some(&1));
         assert_eq!(map.get(second.as_str()), None);
+        assert_eq!(map.get(&expr), Some(&2));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn supports_heterogeneous_key_types() {
+        let expr = Expr::int(1);
+        let stmt = Stmt::Expr(Expr::int(2));
+        let mut map = PtrMap::<&str>::new();
+
+        map.insert(&expr, "expression");
+        map.insert(&stmt, "statement");
+
+        assert_eq!(map.get(&expr), Some(&"expression"));
+        assert_eq!(map.get(&stmt), Some(&"statement"));
+        assert_eq!(map.len(), 2);
     }
 }
