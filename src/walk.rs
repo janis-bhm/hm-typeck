@@ -1,34 +1,38 @@
 use crate::ast::{Block, Expr, FnDecl, Program, Stmt};
 
 /// A visitor for AST nodes, called in preorder by the [`walk_*`] functions.
-pub trait Visitor {
-    fn visit_program(&mut self, _program: &Program) {}
-    fn visit_fn(&mut self, _decl: &FnDecl) {}
-    fn visit_block(&mut self, _block: &Block) {}
-    fn visit_stmt(&mut self, _stmt: &Stmt) {}
-    fn visit_expr(&mut self, _expr: &Expr) {}
+///
+/// The lifetime `'a` is the lifetime of the program borrow, and node references
+/// passed to the visitor share it. This lets a visitor store node references in
+/// an address-keyed `PtrMap<'a, V>`.
+pub trait Visitor<'a> {
+    fn visit_program(&mut self, _program: &'a Program) {}
+    fn visit_fn(&mut self, _decl: &'a FnDecl) {}
+    fn visit_block(&mut self, _block: &'a Block) {}
+    fn visit_stmt(&mut self, _stmt: &'a Stmt) {}
+    fn visit_expr(&mut self, _expr: &'a Expr) {}
 }
 
-pub fn walk_program<V: Visitor>(v: &mut V, program: &Program) {
+pub fn walk_program<'a, V: Visitor<'a>>(v: &mut V, program: &'a Program) {
     v.visit_program(program);
     for function in &program.functions {
         walk_fn(v, function);
     }
 }
 
-pub fn walk_fn<V: Visitor>(v: &mut V, decl: &FnDecl) {
+pub fn walk_fn<'a, V: Visitor<'a>>(v: &mut V, decl: &'a FnDecl) {
     v.visit_fn(decl);
     walk_block(v, &decl.body);
 }
 
-pub fn walk_block<V: Visitor>(v: &mut V, block: &Block) {
+pub fn walk_block<'a, V: Visitor<'a>>(v: &mut V, block: &'a Block) {
     v.visit_block(block);
     for stmt in &block.stmts {
         walk_stmt(v, stmt);
     }
 }
 
-pub fn walk_stmt<V: Visitor>(v: &mut V, stmt: &Stmt) {
+pub fn walk_stmt<'a, V: Visitor<'a>>(v: &mut V, stmt: &'a Stmt) {
     v.visit_stmt(stmt);
     match stmt {
         Stmt::Let { init, .. } => walk_expr(v, init),
@@ -39,7 +43,7 @@ pub fn walk_stmt<V: Visitor>(v: &mut V, stmt: &Stmt) {
     }
 }
 
-pub fn walk_expr<V: Visitor>(v: &mut V, expr: &Expr) {
+pub fn walk_expr<'a, V: Visitor<'a>>(v: &mut V, expr: &'a Expr) {
     v.visit_expr(expr);
     match expr {
         Expr::IntLit(_) | Expr::BoolLit(_) | Expr::Var(_) => {}
@@ -94,20 +98,20 @@ mod tests {
     #[derive(Default)]
     struct Recorder(Vec<Event>);
 
-    impl Visitor for Recorder {
-        fn visit_program(&mut self, _program: &Program) {
+    impl<'p> Visitor<'p> for Recorder {
+        fn visit_program(&mut self, _program: &'p Program) {
             self.0.push(Event::Program);
         }
 
-        fn visit_fn(&mut self, _decl: &crate::ast::FnDecl) {
+        fn visit_fn(&mut self, _decl: &'p crate::ast::FnDecl) {
             self.0.push(Event::Fn);
         }
 
-        fn visit_block(&mut self, _block: &Block) {
+        fn visit_block(&mut self, _block: &'p Block) {
             self.0.push(Event::Block);
         }
 
-        fn visit_stmt(&mut self, stmt: &Stmt) {
+        fn visit_stmt(&mut self, stmt: &'p Stmt) {
             let event = match stmt {
                 Stmt::Let { name, .. } => Event::Let(name.clone()),
                 Stmt::Assign { name, .. } => Event::Assign(name.clone()),
@@ -117,7 +121,7 @@ mod tests {
             self.0.push(event);
         }
 
-        fn visit_expr(&mut self, expr: &Expr) {
+        fn visit_expr(&mut self, expr: &'p Expr) {
             let event = match expr {
                 Expr::IntLit(value) => Event::ExprInt(*value),
                 Expr::BoolLit(_) => Event::ExprBool,
@@ -129,6 +133,36 @@ mod tests {
             };
             self.0.push(event);
         }
+    }
+
+    #[derive(Default)]
+    struct ExprRefCollector<'p> {
+        exprs: Vec<&'p Expr>,
+    }
+
+    impl<'p> Visitor<'p> for ExprRefCollector<'p> {
+        fn visit_expr(&mut self, expr: &'p Expr) {
+            self.exprs.push(expr);
+        }
+    }
+
+    #[test]
+    fn visitor_can_retain_expression_references_for_program_lifetime() {
+        let program = Program {
+            functions: vec![
+                fn_decl("f")
+                    .body(block().let_("x", Type::Int, add(int(1), int(2))).finish())
+                    .finish(),
+            ],
+        };
+        let mut collector = ExprRefCollector::default();
+
+        walk_program(&mut collector, &program);
+
+        assert_eq!(collector.exprs.len(), 3);
+        assert!(matches!(collector.exprs[0], Expr::Binary { .. }));
+        assert_eq!(collector.exprs[1], &Expr::IntLit(1));
+        assert_eq!(collector.exprs[2], &Expr::IntLit(2));
     }
 
     #[test]
