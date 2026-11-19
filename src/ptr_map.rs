@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::collections::HashMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -5,7 +6,7 @@ use std::marker::PhantomData;
 use std::ops::{Deref, DerefMut};
 
 /// A pointer used as an identity key.
-pub struct Ptr<T: ?Sized>(pub *const T);
+pub struct Ptr<T: ?Sized>(pub *const T, pub TypeId);
 
 impl<T: ?Sized> Ptr<T> {
     /// Returns the address of the pointed-to value, without pointer metadata.
@@ -15,7 +16,7 @@ impl<T: ?Sized> Ptr<T> {
 
     /// Erases the pointee type while preserving its address identity.
     pub fn erase(self) -> Ptr<()> {
-        Ptr(self.0 as *const ())
+        Ptr(self.0 as *const (), self.1)
     }
 }
 
@@ -35,7 +36,7 @@ impl<T: ?Sized> fmt::Debug for Ptr<T> {
 
 impl<T: ?Sized> PartialEq for Ptr<T> {
     fn eq(&self, other: &Self) -> bool {
-        self.addr() == other.addr()
+        self.addr() == other.addr() && self.1 == other.1
     }
 }
 
@@ -44,21 +45,28 @@ impl<T: ?Sized> Eq for Ptr<T> {}
 impl<T: ?Sized> Hash for Ptr<T> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.addr().hash(state);
+        self.1.hash(state);
     }
 }
 
-impl<T: ?Sized> From<&T> for Ptr<T> {
+impl<T: ?Sized + 'static> From<&T> for Ptr<T> {
     fn from(value: &T) -> Self {
-        Self(value as *const T)
+        Self(value as *const T, TypeId::of::<T>())
     }
 }
 
-/// A map keyed by the address identity of borrowed values.
+/// A map keyed by the address and pointee type identity of borrowed values.
 ///
-/// Keys are identified by address, so values with equal contents but different
-/// addresses are distinct keys. Do not insert keys whose referents may be
-/// dropped or moved while the map is alive; the borrow lifetime enforces this
-/// for values inserted through [`PtrMap::insert`].
+/// Values with equal contents but different addresses are distinct keys.
+///
+/// Note: the pointee type is part of the key because a compiler may co-locate a
+/// field at offset zero of its parent. For example, enum payload niching can put
+/// `Stmt::Let`'s `init` at the same address as the enclosing `Stmt`, so address
+/// alone could alias distinct AST nodes.
+///
+/// Do not insert keys whose referents may be dropped or moved while the map is
+/// alive; the borrow lifetime enforces this for values inserted through
+/// [`PtrMap::insert`].
 pub struct PtrMap<'a, V> {
     map: HashMap<Ptr<()>, V>,
     _borrow: PhantomData<&'a ()>,
@@ -72,23 +80,23 @@ impl<'a, V> PtrMap<'a, V> {
         }
     }
 
-    pub fn insert<T: ?Sized>(&mut self, key: &'a T, value: V) -> Option<V> {
+    pub fn insert<T: ?Sized + 'static>(&mut self, key: &'a T, value: V) -> Option<V> {
         self.map.insert(Ptr::from(key).erase(), value)
     }
 
-    pub fn get<T: ?Sized>(&self, key: &T) -> Option<&V> {
+    pub fn get<T: ?Sized + 'static>(&self, key: &T) -> Option<&V> {
         self.map.get(&Ptr::from(key).erase())
     }
 
-    pub fn get_mut<T: ?Sized>(&mut self, key: &T) -> Option<&mut V> {
+    pub fn get_mut<T: ?Sized + 'static>(&mut self, key: &T) -> Option<&mut V> {
         self.map.get_mut(&Ptr::from(key).erase())
     }
 
-    pub fn remove<T: ?Sized>(&mut self, key: &T) -> Option<V> {
+    pub fn remove<T: ?Sized + 'static>(&mut self, key: &T) -> Option<V> {
         self.map.remove(&Ptr::from(key).erase())
     }
 
-    pub fn contains_key<T: ?Sized>(&self, key: &T) -> bool {
+    pub fn contains_key<T: ?Sized + 'static>(&self, key: &T) -> bool {
         self.map.contains_key(&Ptr::from(key).erase())
     }
 }
@@ -172,6 +180,27 @@ mod tests {
 
         assert_eq!(map.get(&expr), Some(&"expression"));
         assert_eq!(map.get(&stmt), Some(&"statement"));
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn distinguishes_overlapping_parent_and_field_addresses() {
+        let stmt = Stmt::Let {
+            name: std::rc::Rc::new("x".to_owned()),
+            ty: None,
+            init: Expr::int(1),
+        };
+        let Stmt::Let { init, .. } = &stmt else {
+            unreachable!();
+        };
+        assert_eq!(&stmt as *const Stmt as usize, init as *const Expr as usize);
+
+        let mut map = PtrMap::new();
+        map.insert(&stmt, "statement");
+        map.insert(init, "initializer");
+
+        assert_eq!(map.get(&stmt), Some(&"statement"));
+        assert_eq!(map.get(init), Some(&"initializer"));
         assert_eq!(map.len(), 2);
     }
 }

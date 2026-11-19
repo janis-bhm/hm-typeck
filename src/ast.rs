@@ -125,6 +125,15 @@ impl Block {
     pub fn from_stmts(stmts: Vec<Stmt>) -> Self {
         Self { stmts }
     }
+
+    pub fn trailing_return_position_expr(&self) -> Option<&Expr> {
+        self.stmts.last().and_then(|stmt| match stmt {
+            Stmt::Return(Some(expr)) => Some(expr),
+            Stmt::Expr(Expr::Block(block)) => block.trailing_return_position_expr(),
+            Stmt::Expr(expr) => Some(expr),
+            _ => None,
+        })
+    }
 }
 
 impl Default for Block {

@@ -6,7 +6,7 @@ use crate::ptr_map::PtrMap;
 use crate::walk::{Visitor, walk_program};
 
 /// Marker trait for AST nodes that can be renamed.
-pub trait Renameable {
+pub trait Renameable: 'static {
     fn is_renameable(&self) -> bool {
         true
     }
@@ -15,7 +15,7 @@ pub trait Renameable {
 impl Renameable for FnDecl {}
 impl Renameable for Stmt {
     fn is_renameable(&self) -> bool {
-        matches!(self, Stmt::Assign { .. })
+        matches!(self, Stmt::Let { .. } | Stmt::Assign { .. })
     }
 }
 impl Renameable for Expr {
@@ -49,6 +49,8 @@ impl fmt::Display for Ident {
 
 /// Assigns globally unique names to declarations and records resolved names
 /// for variable references, calls, and assignment LHSs by AST-node address.
+/// Function parameters are also recorded by their parameter-tuple address and
+/// can be retrieved from the resulting map with [`param_ident`].
 ///
 /// Let bindings enter scope after their initializer is visited. Parameters
 /// scope over the function body, and each block (including a block expression)
@@ -59,6 +61,7 @@ pub struct Renamer<'p> {
     next_id: usize,
     block_marks: Vec<usize>,
     function_param_counts: Vec<usize>,
+    pending_let_idents: Vec<Ident>,
     functions: HashMap<String, Ident>,
 }
 
@@ -70,6 +73,7 @@ impl<'p> Renamer<'p> {
             next_id: 0,
             block_marks: Vec::new(),
             function_param_counts: Vec::new(),
+            pending_let_idents: Vec::new(),
             functions: HashMap::new(),
         }
     }
@@ -126,8 +130,9 @@ impl<'p> Visitor<'p> for Renamer<'p> {
         }
 
         self.function_param_counts.push(decl.params.len());
-        for (name, _) in &decl.params {
+        for (index, (name, _)) in decl.params.iter().enumerate() {
             let ident = self.fresh(name);
+            self.renames.insert(&decl.params[index], ident.clone());
             self.scopes.push((name.clone(), ident));
         }
     }
@@ -155,18 +160,31 @@ impl<'p> Visitor<'p> for Renamer<'p> {
     }
 
     fn visit_stmt(&mut self, stmt: &'p Stmt) {
-        if let Stmt::Assign { name, .. } = stmt {
-            // Resolve the LHS before walking the value, against the scope at
-            // this point in the statement traversal.
-            let ident = self.resolve(name).unwrap_or_else(|| self.fresh(name));
-            self.renames.insert(stmt, ident);
+        match stmt {
+            Stmt::Let { name, .. } => {
+                // Reserve the binder's id in preorder, but do not expose it to
+                // the initializer until visit_stmt_post adds it to scope.
+                let ident = self.fresh(name);
+                self.pending_let_idents.push(ident);
+            }
+            Stmt::Assign { name, .. } => {
+                // Resolve the LHS before walking the value, against the scope at
+                // this point in the statement traversal.
+                let ident = self.resolve(name).unwrap_or_else(|| self.fresh(name));
+                self.renames.insert(stmt, ident);
+            }
+            _ => {}
         }
     }
 
     fn visit_stmt_post(&mut self, stmt: &'p Stmt) {
         if let Stmt::Let { name, .. } = stmt {
             let name = name.as_str();
-            let ident = self.fresh(name);
+            let ident = self
+                .pending_let_idents
+                .pop()
+                .expect("visit_stmt_post must follow visit_stmt for a let");
+            self.renames.insert(stmt, ident.clone());
             self.scopes.push((name.to_owned(), ident));
         }
     }
@@ -189,11 +207,23 @@ impl<'p> Visitor<'p> for Renamer<'p> {
 
 /// Alpha-renames all function declarations, variable references, calls, and
 /// assignment LHSs in `program`, returning mappings keyed by the address of
-/// each corresponding AST node.
+/// each corresponding AST node. Parameter identifiers are keyed by their
+/// parameter-tuple addresses and can be retrieved with [`param_ident`].
 pub fn rename(program: &Program) -> PtrMap<'_, Ident> {
     let mut renamer = Renamer::new();
     walk_program(&mut renamer, program);
     renamer.into_renames()
+}
+
+/// Returns the alpha-renamed `Ident` for a function's parameter by index,
+/// as recorded in a renames map produced by this module.
+pub fn param_ident<'p, 'r>(
+    renames: &'r PtrMap<'p, Ident>,
+    decl: &'p FnDecl,
+    index: usize,
+) -> Option<&'r Ident> {
+    decl.params.get(index)?;
+    renames.get(&decl.params[index])
 }
 
 #[cfg(test)]
@@ -201,7 +231,7 @@ mod tests {
     use crate::ast::{Expr, Program, Stmt, Type};
     use crate::builder::{block, block_expr, call, fn_decl, int, var};
 
-    use super::{Ident, rename};
+    use super::{Ident, param_ident, rename};
 
     fn function_body(program: &Program, index: usize) -> &crate::ast::Block {
         &program.functions[index].body
@@ -243,7 +273,7 @@ mod tests {
         assert_eq!(first, &Ident::new("x", 1));
         assert_eq!(second, &Ident::new("x", 3));
         assert_ne!(first, second);
-        assert_eq!(map.len(), 3); // function plus two variable references
+        assert_eq!(map.len(), 7); // function, four let statements, and two references
     }
 
     #[test]
@@ -262,6 +292,60 @@ mod tests {
         };
 
         assert_eq!(map.get(reference), Some(&Ident::new("x", 1)));
+    }
+
+    #[test]
+    fn parameter_idents_are_recorded_and_retrievable() {
+        let program = Program {
+            functions: vec![
+                fn_decl("f")
+                    .param("x", Type::Int)
+                    .param("y", Type::Bool)
+                    .finish(),
+            ],
+        };
+        let decl = &program.functions[0];
+        let map = rename(&program);
+
+        assert_eq!(param_ident(&map, decl, 0), Some(&Ident::new("x", 1)));
+        assert_eq!(param_ident(&map, decl, 1), Some(&Ident::new("y", 2)));
+        assert_eq!(param_ident(&map, decl, 2), None);
+    }
+
+    #[test]
+    fn parameter_ident_matches_scope_resolution() {
+        let program = Program {
+            functions: vec![
+                fn_decl("f")
+                    .param("x", Type::Int)
+                    .body(block().expr(var("x")).finish())
+                    .finish(),
+            ],
+        };
+        let decl = &program.functions[0];
+        let map = rename(&program);
+        let Stmt::Expr(reference) = &decl.body.stmts[0] else {
+            panic!("expected expression statement");
+        };
+
+        assert_eq!(map.get(reference), param_ident(&map, decl, 0));
+    }
+
+    #[test]
+    fn same_named_parameters_in_different_functions_get_distinct_idents() {
+        let program = Program {
+            functions: vec![
+                fn_decl("f").param("x", Type::Int).finish(),
+                fn_decl("g").param("x", Type::Int).finish(),
+            ],
+        };
+        let map = rename(&program);
+        let first = param_ident(&map, &program.functions[0], 0).unwrap();
+        let second = param_ident(&map, &program.functions[1], 0).unwrap();
+
+        assert_eq!(first, &Ident::new("x", 2));
+        assert_eq!(second, &Ident::new("x", 3));
+        assert_ne!(first, second);
     }
 
     #[test]
@@ -316,7 +400,7 @@ mod tests {
             panic!("expected inner variable reference");
         };
 
-        assert_eq!(map.get(reference), Some(&Ident::new("a", 2)));
+        assert_eq!(map.get(reference), Some(&Ident::new("a", 3)));
     }
 
     #[test]
@@ -359,7 +443,7 @@ mod tests {
         let assignment_ident = map.get(assign_stmt).expect("assignment LHS was renamed");
         assert_eq!(assignment_ident.name, "x");
         assert_eq!(Some(assignment_ident), map.get(inner_reference));
-        assert_eq!(assignment_ident, &Ident::new("x", 2));
+        assert_eq!(assignment_ident, &Ident::new("x", 3));
     }
 
     #[test]
@@ -390,12 +474,13 @@ mod tests {
             ],
         };
         let map = rename(&without_outer);
-        let Stmt::Let { init, .. } = &function_body(&without_outer, 0).stmts[0] else {
+        let let_stmt = &function_body(&without_outer, 0).stmts[0];
+        let Stmt::Let { init, .. } = let_stmt else {
             panic!("expected x declaration");
         };
-        assert_eq!(map.get(init), Some(&Ident::new("x", 1)));
-        assert_ne!(map.get(init), Some(&Ident::new("x", 2)));
-        assert_eq!(map.len(), 2); // function declaration and unresolved reference
+        assert_eq!(map.get(init), Some(&Ident::new("x", 2)));
+        assert_ne!(map.get(init), map.get(let_stmt));
+        assert_eq!(map.len(), 3); // function declaration, let statement, and unresolved reference
     }
 
     #[test]

@@ -11,6 +11,7 @@ pub use builder::{BlockBuilder, FnBuilder};
 pub use print::{pretty, print_block, print_expr, print_stmt};
 pub use ptr_map::{Ptr, PtrMap};
 pub use rename::{Ident, Renamer, rename};
+pub use typeck::{InferType, Prim, TypeError, TypeckInfo, typeck};
 pub use walk::{Visitor, walk_block, walk_expr, walk_fn, walk_program, walk_stmt};
 
 #[cfg(test)]
