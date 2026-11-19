@@ -2,6 +2,7 @@ pub mod ast;
 pub mod builder;
 pub mod print;
 pub mod ptr_map;
+pub mod rename;
 pub mod typeck;
 pub mod walk;
 
@@ -9,6 +10,7 @@ pub use ast::{BinOp, Block, Expr, FnDecl, Program, Stmt, Type};
 pub use builder::{BlockBuilder, FnBuilder};
 pub use print::{pretty, print_block, print_expr, print_stmt};
 pub use ptr_map::{Ptr, PtrMap};
+pub use rename::{Ident, Renamer, rename};
 pub use walk::{Visitor, walk_block, walk_expr, walk_fn, walk_program, walk_stmt};
 
 #[cfg(test)]

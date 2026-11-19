@@ -1,6 +1,7 @@
+use core::fmt;
 use std::rc::Rc;
 
-#[derive(Clone, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Type {
     Int,
     Bool,
@@ -14,6 +15,15 @@ pub enum BinOp {
     Div,
     And,
     Or,
+}
+
+#[derive(Clone, PartialEq, Eq, Debug)]
+pub struct Ident(u32);
+
+impl fmt::Display for Ident {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "_{}", self.0)
+    }
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
