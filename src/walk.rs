@@ -1,16 +1,38 @@
 use crate::ast::{Block, Expr, FnDecl, Program, Stmt};
 
-/// A visitor for AST nodes, called in preorder by the [`walk_*`] functions.
+/// A visitor for AST nodes called by the [`walk_*`] functions.
+///
+/// The `visit_*` methods run before a node's children are walked, and the
+/// corresponding `*_post` methods run after its children have been visited.
 ///
 /// The lifetime `'a` is the lifetime of the program borrow, and node references
 /// passed to the visitor share it. This lets a visitor store node references in
 /// an address-keyed `PtrMap<'a, V>`.
 pub trait Visitor<'a> {
     fn visit_program(&mut self, _program: &'a Program) {}
+
+    /// Called after the program's children have been visited.
+    fn visit_program_post(&mut self, _program: &'a Program) {}
+
     fn visit_fn(&mut self, _decl: &'a FnDecl) {}
+
+    /// Called after the function's children have been visited.
+    fn visit_fn_post(&mut self, _decl: &'a FnDecl) {}
+
     fn visit_block(&mut self, _block: &'a Block) {}
+
+    /// Called after the block's children have been visited.
+    fn visit_block_post(&mut self, _block: &'a Block) {}
+
     fn visit_stmt(&mut self, _stmt: &'a Stmt) {}
+
+    /// Called after the statement's children have been visited.
+    fn visit_stmt_post(&mut self, _stmt: &'a Stmt) {}
+
     fn visit_expr(&mut self, _expr: &'a Expr) {}
+
+    /// Called after the expression's children have been visited.
+    fn visit_expr_post(&mut self, _expr: &'a Expr) {}
 }
 
 pub fn walk_program<'a, V: Visitor<'a>>(v: &mut V, program: &'a Program) {
@@ -18,11 +40,13 @@ pub fn walk_program<'a, V: Visitor<'a>>(v: &mut V, program: &'a Program) {
     for function in &program.functions {
         walk_fn(v, function);
     }
+    v.visit_program_post(program);
 }
 
 pub fn walk_fn<'a, V: Visitor<'a>>(v: &mut V, decl: &'a FnDecl) {
     v.visit_fn(decl);
     walk_block(v, &decl.body);
+    v.visit_fn_post(decl);
 }
 
 pub fn walk_block<'a, V: Visitor<'a>>(v: &mut V, block: &'a Block) {
@@ -30,6 +54,7 @@ pub fn walk_block<'a, V: Visitor<'a>>(v: &mut V, block: &'a Block) {
     for stmt in &block.stmts {
         walk_stmt(v, stmt);
     }
+    v.visit_block_post(block);
 }
 
 pub fn walk_stmt<'a, V: Visitor<'a>>(v: &mut V, stmt: &'a Stmt) {
@@ -41,6 +66,7 @@ pub fn walk_stmt<'a, V: Visitor<'a>>(v: &mut V, stmt: &'a Stmt) {
         Stmt::Return(Some(expr)) => walk_expr(v, expr),
         Stmt::Return(None) => {}
     }
+    v.visit_stmt_post(stmt);
 }
 
 pub fn walk_expr<'a, V: Visitor<'a>>(v: &mut V, expr: &'a Expr) {
@@ -69,6 +95,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(v: &mut V, expr: &'a Expr) {
             }
         }
     }
+    v.visit_expr_post(expr);
 }
 
 #[cfg(test)]
@@ -194,6 +221,122 @@ mod tests {
                 Event::ExprBinary(BinOp::Mul),
                 Event::ExprInt(2),
                 Event::ExprInt(3),
+            ]
+        );
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum Slot {
+        Program,
+        Fn,
+        Block,
+        Stmt,
+        Add,
+        Int(i64),
+        Mul,
+    }
+
+    #[derive(Debug, PartialEq, Eq)]
+    enum WalkEvent {
+        Enter(Slot),
+        Exit(Slot),
+    }
+
+    #[derive(Default)]
+    struct PostorderRecorder(Vec<WalkEvent>);
+
+    impl<'p> Visitor<'p> for PostorderRecorder {
+        fn visit_program(&mut self, _program: &'p Program) {
+            self.0.push(WalkEvent::Enter(Slot::Program));
+        }
+
+        fn visit_program_post(&mut self, _program: &'p Program) {
+            self.0.push(WalkEvent::Exit(Slot::Program));
+        }
+
+        fn visit_fn(&mut self, _decl: &'p crate::ast::FnDecl) {
+            self.0.push(WalkEvent::Enter(Slot::Fn));
+        }
+
+        fn visit_fn_post(&mut self, _decl: &'p crate::ast::FnDecl) {
+            self.0.push(WalkEvent::Exit(Slot::Fn));
+        }
+
+        fn visit_block(&mut self, _block: &'p Block) {
+            self.0.push(WalkEvent::Enter(Slot::Block));
+        }
+
+        fn visit_block_post(&mut self, _block: &'p Block) {
+            self.0.push(WalkEvent::Exit(Slot::Block));
+        }
+
+        fn visit_stmt(&mut self, _stmt: &'p Stmt) {
+            self.0.push(WalkEvent::Enter(Slot::Stmt));
+        }
+
+        fn visit_stmt_post(&mut self, _stmt: &'p Stmt) {
+            self.0.push(WalkEvent::Exit(Slot::Stmt));
+        }
+
+        fn visit_expr(&mut self, expr: &'p Expr) {
+            let slot = match expr {
+                Expr::IntLit(value) => Slot::Int(*value),
+                Expr::Binary { op: BinOp::Add, .. } => Slot::Add,
+                Expr::Binary { op: BinOp::Mul, .. } => Slot::Mul,
+                _ => unreachable!("test tree contains only integer and arithmetic expressions"),
+            };
+            self.0.push(WalkEvent::Enter(slot));
+        }
+
+        fn visit_expr_post(&mut self, expr: &'p Expr) {
+            let slot = match expr {
+                Expr::IntLit(value) => Slot::Int(*value),
+                Expr::Binary { op: BinOp::Add, .. } => Slot::Add,
+                Expr::Binary { op: BinOp::Mul, .. } => Slot::Mul,
+                _ => unreachable!("test tree contains only integer and arithmetic expressions"),
+            };
+            self.0.push(WalkEvent::Exit(slot));
+        }
+    }
+
+    #[test]
+    fn visits_nodes_in_preorder_and_postorder() {
+        let program = Program {
+            functions: vec![
+                fn_decl("f")
+                    .body(
+                        block()
+                            .let_("x", Type::Int, add(int(1), mul(int(2), int(3))))
+                            .finish(),
+                    )
+                    .finish(),
+            ],
+        };
+        let mut recorder = PostorderRecorder::default();
+
+        walk_program(&mut recorder, &program);
+
+        assert_eq!(
+            recorder.0,
+            vec![
+                WalkEvent::Enter(Slot::Program),
+                WalkEvent::Enter(Slot::Fn),
+                WalkEvent::Enter(Slot::Block),
+                WalkEvent::Enter(Slot::Stmt),
+                WalkEvent::Enter(Slot::Add),
+                WalkEvent::Enter(Slot::Int(1)),
+                WalkEvent::Exit(Slot::Int(1)),
+                WalkEvent::Enter(Slot::Mul),
+                WalkEvent::Enter(Slot::Int(2)),
+                WalkEvent::Exit(Slot::Int(2)),
+                WalkEvent::Enter(Slot::Int(3)),
+                WalkEvent::Exit(Slot::Int(3)),
+                WalkEvent::Exit(Slot::Mul),
+                WalkEvent::Exit(Slot::Add),
+                WalkEvent::Exit(Slot::Stmt),
+                WalkEvent::Exit(Slot::Block),
+                WalkEvent::Exit(Slot::Fn),
+                WalkEvent::Exit(Slot::Program),
             ]
         );
     }
