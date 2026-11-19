@@ -140,8 +140,8 @@ mod tests {
 
         fn visit_stmt(&mut self, stmt: &'p Stmt) {
             let event = match stmt {
-                Stmt::Let { name, .. } => Event::Let(name.clone()),
-                Stmt::Assign { name, .. } => Event::Assign(name.clone()),
+                Stmt::Let { name, .. } => Event::Let(name.clone().to_string()),
+                Stmt::Assign { name, .. } => Event::Assign(name.clone().to_string()),
                 Stmt::Expr(_) => Event::ExprStmt,
                 Stmt::Return(_) => Event::Return,
             };
@@ -152,9 +152,9 @@ mod tests {
             let event = match expr {
                 Expr::IntLit(value) => Event::ExprInt(*value),
                 Expr::BoolLit(_) => Event::ExprBool,
-                Expr::Var(name) => Event::ExprVar(name.clone()),
+                Expr::Var(name) => Event::ExprVar(name.clone().to_string()),
                 Expr::Binary { op, .. } => Event::ExprBinary(op.clone()),
-                Expr::Call { callee, .. } => Event::ExprCall(callee.clone()),
+                Expr::Call { callee, .. } => Event::ExprCall(callee.clone().to_string()),
                 Expr::Block(_) => Event::ExprBlock,
                 Expr::If { .. } => Event::ExprIf,
             };

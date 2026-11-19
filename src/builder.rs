@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use crate::ast::{BinOp, Block, Expr, FnDecl, Program, Stmt, Type};
 
 #[derive(Clone, Debug, Default)]
@@ -12,8 +14,8 @@ impl BlockBuilder {
 
     pub fn let_(mut self, name: impl Into<String>, ty: Type, init: impl Into<Expr>) -> Self {
         self.stmts.push(Stmt::Let {
-            name: name.into(),
-            ty,
+            name: Rc::new(name.into()),
+            ty: Some(ty),
             init: init.into(),
         });
         self
@@ -21,7 +23,7 @@ impl BlockBuilder {
 
     pub fn assign(mut self, name: impl Into<String>, value: impl Into<Expr>) -> Self {
         self.stmts.push(Stmt::Assign {
-            name: name.into(),
+            name: Rc::new(name.into()),
             value: value.into(),
         });
         self

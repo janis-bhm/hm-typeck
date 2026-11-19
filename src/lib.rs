@@ -12,6 +12,8 @@ pub use walk::{Visitor, walk_block, walk_expr, walk_fn, walk_program, walk_stmt}
 
 #[cfg(test)]
 mod tests {
+    use std::rc::Rc;
+
     use super::ast::{BinOp, Block, Expr, FnDecl, Program, Stmt, Type};
     use super::builder::{add, block, block_expr, bool, call, div, fn_decl, int, mul, sub, var};
     use super::pretty;
@@ -50,31 +52,31 @@ mod tests {
                 body: Block {
                     stmts: vec![
                         Stmt::Let {
-                            name: "result".to_owned(),
-                            ty: Type::Int,
+                            name: Rc::new("result".to_owned()),
+                            ty: Some(Type::Int),
                             init: Expr::Binary {
                                 op: BinOp::Add,
-                                lhs: Box::new(Expr::Var("x".to_owned())),
+                                lhs: Box::new(Expr::Var(Rc::new("x".to_owned()))),
                                 rhs: Box::new(Expr::IntLit(2)),
                             },
                         },
                         Stmt::Let {
-                            name: "enabled".to_owned(),
-                            ty: Type::Bool,
+                            name: Rc::new("enabled".to_owned()),
+                            ty: Some(Type::Bool),
                             init: Expr::BoolLit(true),
                         },
                         Stmt::Expr(Expr::If {
-                            cond: Box::new(Expr::Var("enabled".to_owned())),
+                            cond: Box::new(Expr::Var(Rc::new("enabled".to_owned()))),
                             then_branch,
                             else_branch: Some(Box::new(Expr::Block(else_branch))),
                         }),
                         Stmt::Expr(Expr::Call {
-                            callee: "record".to_owned(),
-                            args: vec![Expr::Var("result".to_owned())],
+                            callee: Rc::new("record".to_owned()),
+                            args: vec![Expr::Var(Rc::new("result".to_owned()))],
                         }),
                         Stmt::Return(Some(Expr::Binary {
                             op: BinOp::Div,
-                            lhs: Box::new(Expr::Var("result".to_owned())),
+                            lhs: Box::new(Expr::Var(Rc::new("result".to_owned()))),
                             rhs: Box::new(Expr::IntLit(2)),
                         })),
                     ],

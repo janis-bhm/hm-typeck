@@ -100,12 +100,12 @@ impl From<Block> for Expr {
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Stmt {
     Let {
-        name: String,
+        name: Rc<String>,
         ty: Option<Type>,
         init: Expr,
     },
     Assign {
-        name: String,
+        name: Rc<String>,
         value: Expr,
     },
     Expr(Expr),
