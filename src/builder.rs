@@ -21,6 +21,15 @@ impl BlockBuilder {
         self
     }
 
+    pub fn let_infer(mut self, name: impl Into<String>, init: impl Into<Expr>) -> Self {
+        self.stmts.push(Stmt::Let {
+            name: Rc::new(name.into()),
+            ty: None,
+            init: init.into(),
+        });
+        self
+    }
+
     pub fn assign(mut self, name: impl Into<String>, value: impl Into<Expr>) -> Self {
         self.stmts.push(Stmt::Assign {
             name: Rc::new(name.into()),

@@ -24,16 +24,17 @@ fn operator(op: &BinOp) -> &'static str {
 
 fn precedence(op: &BinOp) -> u8 {
     match op {
-        BinOp::Add | BinOp::Sub => 1,
-        BinOp::Mul | BinOp::Div => 2,
-        BinOp::And | BinOp::Or => 0,
+        BinOp::Or => 1,
+        BinOp::And => 2,
+        BinOp::Add | BinOp::Sub => 3,
+        BinOp::Mul | BinOp::Div => 4,
     }
 }
 
 fn expression_precedence(expr: &Expr) -> u8 {
     match expr {
         Expr::Binary { op, .. } => precedence(op),
-        _ => 3,
+        _ => 5,
     }
 }
 
@@ -54,7 +55,13 @@ fn print_expr_at(expr: &Expr, level: usize) -> String {
             let parent_precedence = precedence(op);
             let lhs_text = print_expr_at(lhs, level);
             let rhs_text = print_expr_at(rhs, level);
-            let lhs_text = if expression_precedence(lhs) < parent_precedence {
+            let lhs_precedence = expression_precedence(lhs);
+            // Keep mixed binary subtrees on the left of `||` explicit.
+            let lhs_text = if lhs_precedence < parent_precedence
+                || (matches!(op, BinOp::Or)
+                    && matches!(lhs.as_ref(), Expr::Binary { .. })
+                    && lhs_precedence != parent_precedence)
+            {
                 format!("({lhs_text})")
             } else {
                 lhs_text
@@ -185,4 +192,72 @@ pub fn pretty(program: &Program) -> String {
         .map(print_function)
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ast::{BinOp, Expr};
+    use crate::builder::{add, bool, div, mul, sub, var};
+
+    use super::print_expr;
+
+    #[test]
+    fn parenthesizes_left_operands_when_required() {
+        let expr = Expr::binary(BinOp::Or, add(var("a"), var("b")), var("c"));
+        assert_eq!(print_expr(&expr), "(a + b) || c");
+
+        let expr = mul(add(var("a"), var("b")), var("c"));
+        assert_eq!(print_expr(&expr), "(a + b) * c");
+    }
+
+    #[test]
+    fn leaves_higher_precedence_right_operands_unparenthesized() {
+        let expr = add(var("a"), mul(var("b"), var("c")));
+        assert_eq!(print_expr(&expr), "a + b * c");
+    }
+
+    #[test]
+    fn preserves_boolean_precedence_and_association() {
+        let expr = Expr::binary(
+            BinOp::And,
+            var("a"),
+            Expr::binary(BinOp::Or, var("b"), var("c")),
+        );
+        assert_eq!(print_expr(&expr), "a && (b || c)");
+
+        // Parenthesization preserves the And subtree when Or is its parent.
+        let expr = Expr::binary(
+            BinOp::Or,
+            Expr::binary(BinOp::And, var("a"), var("b")),
+            var("c"),
+        );
+        assert_eq!(print_expr(&expr), "(a && b) || c");
+
+        let left_associative = Expr::binary(
+            BinOp::And,
+            Expr::binary(BinOp::And, var("a"), var("b")),
+            var("c"),
+        );
+        assert_eq!(print_expr(&left_associative), "a && b && c");
+
+        let right_associative = Expr::binary(
+            BinOp::And,
+            var("a"),
+            Expr::binary(BinOp::And, var("b"), var("c")),
+        );
+        assert_eq!(print_expr(&right_associative), "a && (b && c)");
+    }
+
+    #[test]
+    fn prints_subtraction_division_and_boolean_literals() {
+        let expr = sub(var("a"), div(var("b"), var("c")));
+        assert_eq!(print_expr(&expr), "a - b / c");
+
+        let expr = Expr::binary(
+            BinOp::And,
+            bool(true),
+            Expr::binary(BinOp::Or, bool(false), bool(true)),
+        );
+        assert_eq!(print_expr(&expr), "true && (false || true)");
+    }
 }
