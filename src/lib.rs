@@ -2,6 +2,7 @@ pub mod ast;
 pub mod builder;
 pub mod print;
 pub mod ptr_map;
+pub mod typeck;
 pub mod walk;
 
 pub use ast::{BinOp, Block, Expr, FnDecl, Program, Stmt, Type};
