@@ -4,7 +4,7 @@ use std::{collections::HashMap, iter, mem};
 use thiserror::Error;
 
 use crate::{
-    Ident, PtrMap, Renamer, Visitor,
+    Ident, PtrMap, Visitor,
     rename::{self, Renameable},
     walk_program,
 };
@@ -506,6 +506,29 @@ impl<'p, 'rename> Visitor<'p> for InferEngine<'p, 'rename> {
         self.record_unify(body_ty.clone(), ret_ty.clone());
     }
 
+    fn visit_expr(&mut self, expr: &'p crate::Expr) {
+        if let crate::Expr::Lambda { params, .. } = expr {
+            self.current_level.0 += 1;
+            for (index, (_, annotation)) in params.iter().enumerate() {
+                let param_ty = match annotation {
+                    Some(ty) => Type::Con(Prim::from(*ty)),
+                    None => self.fresh_var(),
+                };
+                let ident = rename::lambda_param_ident(self.renames, expr, index)
+                    .expect("lambda parameter should be renamed")
+                    .clone();
+                self.ident_types.insert(ident.clone(), param_ty.clone());
+                self.schemes.insert(
+                    ident,
+                    Scheme {
+                        vars: Vec::new(),
+                        ty: param_ty,
+                    },
+                );
+            }
+        }
+    }
+
     fn visit_block(&mut self, _block: &'p crate::Block) {
         self.current_level.0 += 1;
     }
@@ -661,8 +684,29 @@ impl<'p, 'rename> Visitor<'p> for InferEngine<'p, 'rename> {
 
                 self.types.insert(_expr, thent);
             }
+            crate::Expr::Lambda { params, body } => {
+                let param_tys = (0..params.len())
+                    .map(|index| {
+                        let ident = rename::lambda_param_ident(self.renames, _expr, index)
+                            .expect("lambda parameter should be renamed");
+                        self.ident_types
+                            .get(ident)
+                            .cloned()
+                            .expect("lambda parameter type should be inferred")
+                    })
+                    .collect();
+                let body_ty = self.node_type(body);
+                self.current_level.0 -= 1;
+                self.types
+                    .insert(_expr, Type::Fun(param_tys, Box::new(body_ty)));
+            }
             crate::Expr::Call { callee, args } => {
-                let tf = self.ident_type(_expr);
+                let tf = self
+                    .schemes
+                    .get(self.node_ident(_expr))
+                    .cloned()
+                    .map(|scheme| self.instantiate(&scheme))
+                    .unwrap_or_else(|| self.ident_type(_expr));
 
                 let Type::Fun(params, ret) = tf else {
                     self.errors
@@ -695,7 +739,7 @@ impl<'p, 'rename> Visitor<'p> for InferEngine<'p, 'rename> {
 /// Checks if an expression is a value for generalization purposes.
 fn is_value(expr: &crate::Expr) -> bool {
     match expr {
-        crate::Expr::IntLit(_) | crate::Expr::BoolLit(_) => true,
+        crate::Expr::IntLit(_) | crate::Expr::BoolLit(_) | crate::Expr::Lambda { .. } => true,
         crate::Expr::Block(block) => block.stmts.last().is_none_or(|stmt| match stmt {
             crate::Stmt::Expr(e) => is_value(e),
             _ => false,

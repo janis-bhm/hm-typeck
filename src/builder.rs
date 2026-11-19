@@ -153,6 +153,20 @@ pub fn call(name: impl Into<String>, args: Vec<Expr>) -> Expr {
     Expr::call(name, args)
 }
 
+/// Build a closure expression. Bind it with [`BlockBuilder::let_infer`] and
+/// invoke it by name with [`call`], for example:
+///
+/// ```
+/// use typeck::builder::{block, call, int, lambda, var};
+///
+/// let body = block().expr(var("x")).finish();
+/// let _binding = block().let_infer("lambda", lambda(vec![("x", None)], body));
+/// let _invocation = call("lambda", vec![int(1)]);
+/// ```
+pub fn lambda(params: impl IntoIterator<Item = (&'static str, Option<Type>)>, body: Block) -> Expr {
+    Expr::lambda(params, body)
+}
+
 pub fn add(lhs: impl Into<Expr>, rhs: impl Into<Expr>) -> Expr {
     Expr::binary(BinOp::Add, lhs, rhs)
 }

@@ -49,12 +49,14 @@ impl fmt::Display for Ident {
 
 /// Assigns globally unique names to declarations and records resolved names
 /// for variable references, calls, and assignment LHSs by AST-node address.
-/// Function parameters are also recorded by their parameter-tuple address and
-/// can be retrieved from the resulting map with [`param_ident`].
+/// Function and lambda parameters are also recorded by their parameter-tuple
+/// address and can be retrieved with [`param_ident`] and
+/// [`lambda_param_ident`].
 ///
 /// Let bindings enter scope after their initializer is visited. Parameters
 /// scope over the function body, and each block (including a block expression)
-/// introduces a scope. Shadowing is resolved from the innermost binding out.
+/// introduces a scope. Lambda parameters scope over the lambda body.
+/// Shadowing is resolved from the innermost binding out.
 pub struct Renamer<'p> {
     renames: PtrMap<'p, Ident>,
     scopes: Vec<(String, Ident)>,
@@ -190,6 +192,15 @@ impl<'p> Visitor<'p> for Renamer<'p> {
     }
 
     fn visit_expr(&mut self, expr: &'p Expr) {
+        if let Expr::Lambda { params, .. } = expr {
+            self.block_marks.push(self.scopes.len());
+            for (index, (name, _)) in params.iter().enumerate() {
+                let ident = self.fresh(name);
+                self.renames.insert(&params[index], ident.clone());
+                self.scopes.push((name.to_string(), ident));
+            }
+        }
+
         let name = match expr {
             Expr::Var(name) => Some(name.as_str()),
             Expr::Call { callee, .. } => Some(callee.as_str()),
@@ -203,12 +214,23 @@ impl<'p> Visitor<'p> for Renamer<'p> {
             self.renames.insert(expr, ident);
         }
     }
+
+    fn visit_expr_post(&mut self, expr: &'p Expr) {
+        if matches!(expr, Expr::Lambda { .. }) {
+            let mark = self
+                .block_marks
+                .pop()
+                .expect("lambda visit_expr_post must follow visit_expr");
+            self.scopes.truncate(mark);
+        }
+    }
 }
 
 /// Alpha-renames all function declarations, variable references, calls, and
 /// assignment LHSs in `program`, returning mappings keyed by the address of
-/// each corresponding AST node. Parameter identifiers are keyed by their
-/// parameter-tuple addresses and can be retrieved with [`param_ident`].
+/// each corresponding AST node. Function and lambda parameter identifiers are
+/// keyed by their parameter-tuple addresses and can be retrieved with
+/// [`param_ident`] and [`lambda_param_ident`].
 pub fn rename(program: &Program) -> PtrMap<'_, Ident> {
     let mut renamer = Renamer::new();
     walk_program(&mut renamer, program);
@@ -226,12 +248,27 @@ pub fn param_ident<'p, 'r>(
     renames.get(&decl.params[index])
 }
 
+/// Returns the alpha-renamed `Ident` for a lambda parameter by index, as
+/// recorded in a renames map produced by this module.
+pub fn lambda_param_ident<'p, 'r>(
+    renames: &'r PtrMap<'p, Ident>,
+    expr: &'p Expr,
+    index: usize,
+) -> Option<&'r Ident> {
+    let Expr::Lambda { params, .. } = expr else {
+        return None;
+    };
+    params.get(index)?;
+    renames.get(&params[index])
+}
+
 #[cfg(test)]
 mod tests {
     use crate::ast::{Expr, Program, Stmt, Type};
-    use crate::builder::{block, block_expr, call, fn_decl, int, var};
+    use crate::builder::{block, block_expr, call, fn_decl, int, lambda, var};
+    use crate::{InferType, Prim};
 
-    use super::{Ident, param_ident, rename};
+    use super::{Ident, lambda_param_ident, param_ident, rename};
 
     fn function_body(program: &Program, index: usize) -> &crate::ast::Block {
         &program.functions[index].body
@@ -366,6 +403,93 @@ mod tests {
 
         assert_eq!(map.get(declaration), Some(&Ident::new("f", 0)));
         assert_eq!(map.get(call_expr), map.get(declaration));
+    }
+
+    #[test]
+    fn lambda_can_monomorph() {
+        let program = Program {
+            functions: vec![
+                fn_decl("caller")
+                    .body(
+                        block()
+                            .let_infer(
+                                "lambda",
+                                lambda(vec![("x", None)], block().expr(var("x")).finish()),
+                            )
+                            .let_infer("result1", call("lambda", vec![int(1)]))
+                            .let_infer("result2", call("lambda", vec![crate::builder::bool(false)]))
+                            .expr(call("lambda", vec![int(3)]))
+                            .finish(),
+                    )
+                    .finish(),
+            ],
+        };
+
+        let info = crate::typeck::typeck(&program)
+            .expect("let-bound lambda should support per-call instantiation");
+        let stmts = &program.functions[0].body.stmts;
+        let Stmt::Let { init: first, .. } = &stmts[1] else {
+            panic!("expected result1 binding");
+        };
+        let Stmt::Let { init: second, .. } = &stmts[2] else {
+            panic!("expected result2 binding");
+        };
+        assert_eq!(info.type_of(first), Some(InferType::Con(Prim::Int)));
+        assert_eq!(info.type_of(second), Some(InferType::Con(Prim::Bool)));
+    }
+
+    #[test]
+    fn lambda_parameters_shadow_outer_names_and_local_binding_shadows_function() {
+        let program = Program {
+            functions: vec![
+                fn_decl("lambda").finish(),
+                fn_decl("caller")
+                    .body(
+                        block()
+                            .let_("x", Type::Int, int(0))
+                            .let_infer(
+                                "lambda",
+                                lambda(
+                                    vec![("x", Some(Type::Int)), ("y", None)],
+                                    block().expr(var("x")).finish(),
+                                ),
+                            )
+                            .expr(call("lambda", vec![int(1), int(2)]))
+                            .finish(),
+                    )
+                    .finish(),
+            ],
+        };
+        let map = rename(&program);
+        let stmts = &program.functions[1].body.stmts;
+        let Stmt::Let {
+            init: lambda_expr @ Expr::Lambda { .. },
+            ..
+        } = &stmts[1]
+        else {
+            panic!("expected lambda initializer");
+        };
+        let Expr::Lambda { body, .. } = lambda_expr else {
+            unreachable!();
+        };
+        let Stmt::Expr(param_ref) = &body.stmts[0] else {
+            panic!("expected lambda body reference");
+        };
+        let Stmt::Expr(call_expr @ Expr::Call { .. }) = &stmts[2] else {
+            panic!("expected call to local lambda");
+        };
+
+        let outer_x = map.get(&stmts[0]).expect("outer binding was renamed");
+        let lambda_x = lambda_param_ident(&map, lambda_expr, 0).unwrap();
+        let lambda_y = lambda_param_ident(&map, lambda_expr, 1).unwrap();
+        let lambda_binding = map.get(&stmts[1]).expect("lambda binding was renamed");
+        assert_eq!(map.get(param_ref), Some(lambda_x));
+        assert_ne!(lambda_x, outer_x);
+        assert_eq!(lambda_x.name, "x");
+        assert_eq!(lambda_y.name, "y");
+        assert_eq!(map.get(call_expr), Some(lambda_binding));
+        assert_eq!(lambda_param_ident(&map, lambda_expr, 2), None);
+        assert_eq!(lambda_param_ident(&map, param_ref, 0), None);
     }
 
     #[test]

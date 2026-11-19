@@ -36,6 +36,10 @@ pub enum Expr {
         callee: Rc<String>,
         args: Vec<Expr>,
     },
+    Lambda {
+        params: Vec<(Rc<String>, Option<Type>)>,
+        body: Block,
+    },
 }
 
 impl Expr {
@@ -63,6 +67,19 @@ impl Expr {
         Self::Call {
             callee: Rc::new(callee.into()),
             args,
+        }
+    }
+
+    pub fn lambda(
+        params: impl IntoIterator<Item = (impl Into<String>, Option<Type>)>,
+        body: Block,
+    ) -> Self {
+        Self::Lambda {
+            params: params
+                .into_iter()
+                .map(|(name, ty)| (Rc::new(name.into()), ty))
+                .collect(),
+            body,
         }
     }
 

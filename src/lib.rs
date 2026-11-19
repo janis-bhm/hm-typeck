@@ -19,7 +19,9 @@ mod tests {
     use std::rc::Rc;
 
     use super::ast::{BinOp, Block, Expr, FnDecl, Program, Stmt, Type};
-    use super::builder::{add, block, block_expr, bool, call, div, fn_decl, int, mul, sub, var};
+    use super::builder::{
+        add, block, block_expr, bool, call, div, fn_decl, int, lambda, mul, sub, var,
+    };
     use super::pretty;
 
     #[test]
@@ -89,6 +91,45 @@ mod tests {
         };
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn lambda_builder_constructs_an_inferred_binding_and_call() {
+        let init = lambda(
+            vec![("x", Some(Type::Int)), ("y", None)],
+            block().expr(add(var("x"), int(1))).finish(),
+        );
+        let body = block()
+            .let_infer("lambda", init)
+            .expr(call("lambda", vec![int(2)]))
+            .finish();
+
+        let Stmt::Let {
+            name,
+            ty: None,
+            init:
+                Expr::Lambda {
+                    params,
+                    body: lambda_body,
+                },
+        } = &body.stmts[0]
+        else {
+            panic!("expected inferred lambda binding");
+        };
+        assert_eq!(name.as_str(), "lambda");
+        assert_eq!(
+            params,
+            &vec![
+                (Rc::new("x".to_owned()), Some(Type::Int)),
+                (Rc::new("y".to_owned()), None)
+            ]
+        );
+        assert_eq!(lambda_body, &block().expr(add(var("x"), int(1))).finish());
+        assert!(matches!(
+            &body.stmts[1],
+            Stmt::Expr(Expr::Call { callee, args })
+                if callee.as_str() == "lambda" && args == &[Expr::IntLit(2)]
+        ));
     }
 
     #[test]

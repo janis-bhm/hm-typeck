@@ -83,6 +83,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(v: &mut V, expr: &'a Expr) {
             }
         }
         Expr::Block(block) => walk_block(v, block),
+        Expr::Lambda { body, .. } => walk_block(v, body),
         Expr::If {
             cond,
             then_branch,
@@ -102,7 +103,7 @@ pub fn walk_expr<'a, V: Visitor<'a>>(v: &mut V, expr: &'a Expr) {
 mod tests {
     use super::{Visitor, walk_program};
     use crate::ast::{BinOp, Block, Expr, Program, Stmt, Type};
-    use crate::builder::{add, block, block_expr, call, fn_decl, int, mul, var};
+    use crate::builder::{add, block, block_expr, call, fn_decl, int, lambda, mul, var};
 
     #[derive(Debug, PartialEq, Eq)]
     enum Event {
@@ -120,6 +121,8 @@ mod tests {
         ExprCall(String),
         ExprBlock,
         ExprIf,
+        ExprLambda,
+        ExprLambdaPost,
     }
 
     #[derive(Default)]
@@ -157,8 +160,15 @@ mod tests {
                 Expr::Call { callee, .. } => Event::ExprCall(callee.clone().to_string()),
                 Expr::Block(_) => Event::ExprBlock,
                 Expr::If { .. } => Event::ExprIf,
+                Expr::Lambda { .. } => Event::ExprLambda,
             };
             self.0.push(event);
+        }
+
+        fn visit_expr_post(&mut self, expr: &'p Expr) {
+            if matches!(expr, Expr::Lambda { .. }) {
+                self.0.push(Event::ExprLambdaPost);
+            }
         }
     }
 
@@ -221,6 +231,47 @@ mod tests {
                 Event::ExprBinary(BinOp::Mul),
                 Event::ExprInt(2),
                 Event::ExprInt(3),
+            ]
+        );
+    }
+
+    #[test]
+    fn visits_lambda_body_block_between_lambda_pre_and_post_events() {
+        let program = Program {
+            functions: vec![
+                fn_decl("f")
+                    .body(
+                        block()
+                            .let_infer(
+                                "lambda",
+                                lambda(
+                                    vec![("x", None)],
+                                    block().expr(add(var("x"), int(1))).finish(),
+                                ),
+                            )
+                            .finish(),
+                    )
+                    .finish(),
+            ],
+        };
+        let mut recorder = Recorder::default();
+
+        walk_program(&mut recorder, &program);
+
+        assert_eq!(
+            recorder.0,
+            vec![
+                Event::Program,
+                Event::Fn,
+                Event::Block,
+                Event::Let("lambda".to_owned()),
+                Event::ExprLambda,
+                Event::Block,
+                Event::ExprStmt,
+                Event::ExprBinary(BinOp::Add),
+                Event::ExprVar("x".to_owned()),
+                Event::ExprInt(1),
+                Event::ExprLambdaPost,
             ]
         );
     }

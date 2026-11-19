@@ -75,6 +75,17 @@ fn print_expr_at(expr: &Expr, level: usize) -> String {
             format!("{lhs_text} {} {rhs_text}", operator(op))
         }
         Expr::Block(block) => print_braced_block(block, level, true),
+        Expr::Lambda { params, body } => {
+            let params = params
+                .iter()
+                .map(|(name, ty)| match ty {
+                    Some(ty) => format!("{name}: {}", type_name(ty)),
+                    None => name.to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("|{params}| {}", print_braced_block(body, level, true))
+        }
         Expr::If {
             cond,
             then_branch,
@@ -134,11 +145,11 @@ fn print_stmt_at(stmt: &Stmt, level: usize, semicolon: bool) -> String {
     let prefix = indentation(level);
     match stmt {
         Stmt::Let { name, ty, init } => {
-            format!(
-                "{prefix}let {name}: {} = {};",
-                ty.as_ref().map_or("_", type_name),
-                print_expr_at(init, level)
-            )
+            let ty = ty
+                .as_ref()
+                .map(|ty| format!(": {}", type_name(ty)))
+                .unwrap_or_default();
+            format!("{prefix}let {name}{ty} = {};", print_expr_at(init, level))
         }
         Stmt::Assign { name, value } => {
             format!("{prefix}{name} = {};", print_expr_at(value, level))
@@ -196,10 +207,10 @@ pub fn pretty(program: &Program) -> String {
 
 #[cfg(test)]
 mod tests {
-    use crate::ast::{BinOp, Expr};
-    use crate::builder::{add, bool, div, mul, sub, var};
+    use crate::ast::{BinOp, Expr, Type};
+    use crate::builder::{add, block, bool, div, lambda, mul, sub, var};
 
-    use super::print_expr;
+    use super::{print_block, print_expr};
 
     #[test]
     fn parenthesizes_left_operands_when_required() {
@@ -259,5 +270,23 @@ mod tests {
             Expr::binary(BinOp::Or, bool(false), bool(true)),
         );
         assert_eq!(print_expr(&expr), "true && (false || true)");
+    }
+
+    #[test]
+    fn prints_lambda_with_mixed_parameter_annotations_in_a_let_initializer() {
+        let block = block()
+            .let_infer(
+                "lambda",
+                lambda(
+                    vec![("x", Some(Type::Int)), ("y", None)],
+                    block().expr(add(var("x"), var("y"))).finish(),
+                ),
+            )
+            .finish();
+
+        assert_eq!(
+            print_block(&block),
+            "{\n  let lambda = |x: Int, y| {\n    x + y\n  };\n}"
+        );
     }
 }

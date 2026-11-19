@@ -1,4 +1,4 @@
-use typeck::builder::{add, block, block_expr, bool, call, fn_decl, int, mul, var};
+use typeck::builder::{add, block, block_expr, bool, call, fn_decl, int, lambda, mul, var};
 use typeck::{Expr, InferType, Prim, Program, Type, TypeError, typeck as infer};
 
 fn program(functions: Vec<typeck::FnDecl>) -> Program {
@@ -78,6 +78,38 @@ fn infers_lets_operators_block_tails_and_function_signatures() {
         _ => unreachable!(),
     };
     assert_eq!(info.type_of(block_tail), Some(InferType::Con(Prim::Int)));
+}
+
+#[test]
+fn infers_and_calls_a_local_lambda_binding() {
+    let function = fn_decl("apply")
+        .body(
+            block()
+                .let_infer(
+                    "lambda",
+                    lambda(
+                        vec![("x", Some(Type::Int)), ("y", None)],
+                        block().expr(add(var("x"), var("y"))).finish(),
+                    ),
+                )
+                .let_infer("result", call("lambda", vec![int(2), int(3)]))
+                .ret(var("result"))
+                .finish(),
+        )
+        .finish();
+    let program = program(vec![function]);
+
+    let info = infer(&program).expect("lambda parameter should infer as Int");
+    let typeck::Stmt::Let { init, .. } = &program.functions[0].body.stmts[0] else {
+        unreachable!();
+    };
+    assert_eq!(
+        info.type_of(init),
+        Some(InferType::Fun(
+            vec![InferType::Con(Prim::Int), InferType::Con(Prim::Int)],
+            Box::new(InferType::Con(Prim::Int)),
+        ))
+    );
 }
 
 #[test]
