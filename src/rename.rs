@@ -5,6 +5,25 @@ use crate::ast::{Block, Expr, FnDecl, Program, Stmt};
 use crate::ptr_map::PtrMap;
 use crate::walk::{Visitor, walk_program};
 
+/// Marker trait for AST nodes that can be renamed.
+pub trait Renameable {
+    fn is_renameable(&self) -> bool {
+        true
+    }
+}
+
+impl Renameable for FnDecl {}
+impl Renameable for Stmt {
+    fn is_renameable(&self) -> bool {
+        matches!(self, Stmt::Assign { .. })
+    }
+}
+impl Renameable for Expr {
+    fn is_renameable(&self) -> bool {
+        matches!(self, Expr::Var(_) | Expr::Call { .. })
+    }
+}
+
 /// A unique, alpha-renamed identifier: the original name plus a globally
 /// increasing disambiguating index.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -29,7 +48,7 @@ impl fmt::Display for Ident {
 }
 
 /// Assigns globally unique names to declarations and records resolved names
-/// for variable references and calls by AST-node address.
+/// for variable references, calls, and assignment LHSs by AST-node address.
 ///
 /// Let bindings enter scope after their initializer is visited. Parameters
 /// scope over the function body, and each block (including a block expression)
@@ -135,6 +154,15 @@ impl<'p> Visitor<'p> for Renamer<'p> {
         self.scopes.truncate(mark);
     }
 
+    fn visit_stmt(&mut self, stmt: &'p Stmt) {
+        if let Stmt::Assign { name, .. } = stmt {
+            // Resolve the LHS before walking the value, against the scope at
+            // this point in the statement traversal.
+            let ident = self.resolve(name).unwrap_or_else(|| self.fresh(name));
+            self.renames.insert(stmt, ident);
+        }
+    }
+
     fn visit_stmt_post(&mut self, stmt: &'p Stmt) {
         if let Stmt::Let { name, .. } = stmt {
             let name = name.as_str();
@@ -159,9 +187,9 @@ impl<'p> Visitor<'p> for Renamer<'p> {
     }
 }
 
-/// Alpha-renames all function declarations, variable references, and calls in
-/// `program`, returning mappings keyed by the address of each corresponding
-/// AST node.
+/// Alpha-renames all function declarations, variable references, calls, and
+/// assignment LHSs in `program`, returning mappings keyed by the address of
+/// each corresponding AST node.
 pub fn rename(program: &Program) -> PtrMap<'_, Ident> {
     let mut renamer = Renamer::new();
     walk_program(&mut renamer, program);
@@ -289,6 +317,49 @@ mod tests {
         };
 
         assert_eq!(map.get(reference), Some(&Ident::new("a", 2)));
+    }
+
+    #[test]
+    fn assignment_lhs_resolves_to_innermost_shadowed_binding() {
+        let program = Program {
+            functions: vec![
+                fn_decl("f")
+                    .body(
+                        block()
+                            .let_("x", Type::Int, int(1))
+                            .let_(
+                                "y",
+                                Type::Int,
+                                block_expr(
+                                    block()
+                                        .let_("x", Type::Int, int(2))
+                                        .assign("x", int(3))
+                                        .expr(var("x"))
+                                        .finish(),
+                                ),
+                            )
+                            .finish(),
+                    )
+                    .finish(),
+            ],
+        };
+        let map = rename(&program);
+        let Stmt::Let {
+            init: Expr::Block(inner_block),
+            ..
+        } = &function_body(&program, 0).stmts[1]
+        else {
+            panic!("expected block expression initializer");
+        };
+        let assign_stmt = &inner_block.stmts[1];
+        let Stmt::Expr(inner_reference) = &inner_block.stmts[2] else {
+            panic!("expected inner variable reference");
+        };
+
+        let assignment_ident = map.get(assign_stmt).expect("assignment LHS was renamed");
+        assert_eq!(assignment_ident.name, "x");
+        assert_eq!(Some(assignment_ident), map.get(inner_reference));
+        assert_eq!(assignment_ident, &Ident::new("x", 2));
     }
 
     #[test]
