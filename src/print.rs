@@ -17,6 +17,8 @@ fn operator(op: &BinOp) -> &'static str {
         BinOp::Sub => "-",
         BinOp::Mul => "*",
         BinOp::Div => "/",
+        BinOp::And => "&&",
+        BinOp::Or => "||",
     }
 }
 
@@ -24,6 +26,7 @@ fn precedence(op: &BinOp) -> u8 {
     match op {
         BinOp::Add | BinOp::Sub => 1,
         BinOp::Mul | BinOp::Div => 2,
+        BinOp::And | BinOp::Or => 0,
     }
 }
 
@@ -38,7 +41,7 @@ fn print_expr_at(expr: &Expr, level: usize) -> String {
     match expr {
         Expr::IntLit(value) => value.to_string(),
         Expr::BoolLit(value) => value.to_string(),
-        Expr::Var(name) => name.clone(),
+        Expr::Var(name) => name.clone().to_string(),
         Expr::Call { callee, args } => {
             let args = args
                 .iter()
@@ -123,11 +126,13 @@ fn print_braced_block(block: &Block, level: usize, tail_expression: bool) -> Str
 fn print_stmt_at(stmt: &Stmt, level: usize, semicolon: bool) -> String {
     let prefix = indentation(level);
     match stmt {
-        Stmt::Let { name, ty, init } => format!(
-            "{prefix}let {name}: {} = {};",
-            type_name(ty),
-            print_expr_at(init, level)
-        ),
+        Stmt::Let { name, ty, init } => {
+            format!(
+                "{prefix}let {name}: {} = {};",
+                ty.as_ref().map_or("_", type_name),
+                print_expr_at(init, level)
+            )
+        }
         Stmt::Assign { name, value } => {
             format!("{prefix}{name} = {};", print_expr_at(value, level))
         }

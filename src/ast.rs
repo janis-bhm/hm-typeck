@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Type {
     Int,
@@ -10,13 +12,15 @@ pub enum BinOp {
     Sub,
     Mul,
     Div,
+    And,
+    Or,
 }
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Expr {
     IntLit(i64),
     BoolLit(bool),
-    Var(String),
+    Var(Rc<String>),
     Binary {
         op: BinOp,
         lhs: Box<Expr>,
@@ -29,7 +33,7 @@ pub enum Expr {
         else_branch: Option<Box<Expr>>,
     },
     Call {
-        callee: String,
+        callee: Rc<String>,
         args: Vec<Expr>,
     },
 }
@@ -44,7 +48,7 @@ impl Expr {
     }
 
     pub fn var(name: impl Into<String>) -> Self {
-        Self::Var(name.into())
+        Self::Var(Rc::new(name.into()))
     }
 
     pub fn binary(op: BinOp, lhs: impl Into<Self>, rhs: impl Into<Self>) -> Self {
@@ -57,7 +61,7 @@ impl Expr {
 
     pub fn call(callee: impl Into<String>, args: Vec<Self>) -> Self {
         Self::Call {
-            callee: callee.into(),
+            callee: Rc::new(callee.into()),
             args,
         }
     }
@@ -95,8 +99,15 @@ impl From<Block> for Expr {
 
 #[derive(Clone, PartialEq, Eq, Debug)]
 pub enum Stmt {
-    Let { name: String, ty: Type, init: Expr },
-    Assign { name: String, value: Expr },
+    Let {
+        name: String,
+        ty: Option<Type>,
+        init: Expr,
+    },
+    Assign {
+        name: String,
+        value: Expr,
+    },
     Expr(Expr),
     Return(Option<Expr>),
 }
