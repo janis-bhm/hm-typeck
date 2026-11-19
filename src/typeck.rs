@@ -101,7 +101,6 @@ impl<'a> TypeckInfo<'a> {
 
 /// Type-checks a program and returns inferred expression types and signatures.
 pub fn typeck<'a>(_program: &'a crate::Program) -> Result<TypeckInfo<'a>, Vec<TypeError>> {
-    // TODO(user): connect the in-progress inference engine to this public API.
     let renames = crate::rename::rename(_program);
 
     let mut infer = InferEngine {
